@@ -17,7 +17,7 @@
     "color-string": "^1.5.3",
     "discord.js": "^12.2.0",
     "dotenv": "^8.2.0",
-    "humanize-duration": "^3.23.0",
+    "humanize-duration": "^3.23.1",
     "mongoose": "^5.9.25",
     "mongoose-sequence": "^5.2.2",
     "ms": "^2.1.2",
