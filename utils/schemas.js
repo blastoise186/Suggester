@@ -5,13 +5,17 @@ const { prefix } = require("../config.json");
 const settings = new Schema({
 	id: { type: String, required: true }, // server id
 	blocked: { type: Boolean, default: false },
-	whitelist: { type: Boolean, default: false },
+	allowlist: { type: Boolean, default: false },
 	flags: [ String ],
 	config: {
 		prefix: { type: String, default: prefix },
+		locale: { type: String, default: "en" },
 		admin_roles: [String],
 		staff_roles: [String],
 		allowed_roles: [String],
+		voting_roles: [String],
+		blocked_roles: [String],
+		ping_role: String,
 		approved_role: { type: String },
 		channels: {
 			suggestions: { type: String },
@@ -21,11 +25,18 @@ const settings = new Schema({
 			archive: { type: String },
 			commands: { type: String }
 		},
+		reactionOptions: {
+			suggester: { type: Boolean, default: true },
+			one: { type: Boolean, default: true },
+			color_threshold: { type: Number, default: 15 },
+			color: { type: String, default: "#FFD700" }
+		},
 		notify: { type: Boolean, default: true },
 		react: { type: Boolean, default: true },
 		clean_suggestion_command: { type: Boolean, default: false },
 		mode: { type: String, default: "review" },
-		blacklist: [String],
+		in_channel_suggestions: { type: Boolean, default: false },
+		blocklist: [String],
 		emojis: {
 			up: { type: String, default: "👍" },
 			mid: { type: String, default: "🤷" },
@@ -54,6 +65,10 @@ const suggestion = new Schema({
 		mid: { type: String, default: "🤷" },
 		down: { type: String, default: "👎" }
 	},
+	reviewEmojis: {
+		approve: String,
+		deny: String
+	},
 	messageId: String,
 	comments: [
 		{
@@ -65,7 +80,7 @@ const suggestion = new Schema({
 		}
 	],
 	attachment: String,
-	implemented: Boolean
+	implemented: { type: Boolean, default: false }
 });
 
 const user = new Schema({
@@ -73,12 +88,36 @@ const user = new Schema({
 	ack: String,
 	blocked: { type: Boolean, default: false },
 	notify: { type: Boolean, default: true },
-	selfnotify: { type: Boolean, default: true},
+	locale: { type: String },
 	flags: [ String ]
 });
+
+const command = new Schema({
+	command: { type: String, required: true },
+	fullCommand: { type: String, required: true },
+	success: { type: Boolean, required: false },
+
+	user: { type: String, required: true },
+	guild: String,
+	channel: { type: String, required: true },
+	message: { type: String, required: true },
+
+	date: { type: Date, required: true },
+	executionTime: { type: Number, required: true }
+}/*, { capped: { size: 10000000 }}*/); // can be made into a capped collection if needed
+
+const serverLog = new Schema({
+	id: { type: String, required: true },
+	action: { type: String, required: true },
+	joinedAt: { type: Date, required: false }, // if the bot left a server, when did it join?
+	timesJoined: { type: Number, required: false },
+	date: { type: Date, required: true }
+}/*, { capped: true, size: 10000000 }*/); // can be made into a capped collection if needed.
 
 module.exports = {
 	Server: model("servers", settings, "settings"),
 	Suggestion: model("suggestions", suggestion, "suggestions"),
-	User: model("user", user, "users")
+	User: model("user", user, "users"),
+	Command: model("commands", command, "commands"),
+	ServerLog: model("serverlog", serverLog, "serverLogs")
 };

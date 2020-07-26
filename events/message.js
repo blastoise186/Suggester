@@ -1,97 +1,78 @@
-const { dbQuery, dbModify, coreLog, commandLog, checkPermissions, errorLog } = require("../coreFunctions");
-const { emoji, colors, prefix, log_hooks, support_invite } = require("../config.json");
+const { checkPermissions, channelPermissions } = require("../utils/checks");
+const { dbQuery, dbModify } = require("../utils/db");
+const { commandLog, errorLog, commandExecuted } = require("../utils/logs");
+const { prefix, log_hooks, support_invite } = require("../config.json");
+const { string } = require("../utils/strings");
 const { Collection } = require("discord.js");
+function escapeRegExp(string) {
+	return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); // $& means the whole matched string
+}
 
 module.exports = async (Discord, client, message) => {
-	if (message.channel.type !== "text") {
-		let dmEmbed = new Discord.MessageEmbed()
-			.setDescription(message.content);
-		if (message.channel.type === "dm" && client.user.id !== message.author.id) return coreLog(`:e_mail: **${message.author.tag}** (\`${message.author.id}\`) sent a DM to the bot:`, dmEmbed);
-		return;
-	}
-	if (message.author.bot === true) return;
+	const pre = new Date();
+	if (!["text", "news", "dm"].includes(message.channel.type) || message.author.bot) return;
 
-	let permission = await checkPermissions(message.member, client);
+	let permission = await checkPermissions(message.member || message.author, client);
 
-	let qServerDB = await dbQuery("Server", { id: message.guild.id });
-	let serverPrefix = (qServerDB && qServerDB.config && qServerDB.config.prefix) || prefix;
-
-	let regexEscape = "^$.|?*+()[{".split("");
-	regexEscape.push("\\");
-
-	const match = message.content.match(new RegExp(`^<@!?${client.user.id}> ?`));
-	let specialPrefix = false;
-	if (match) {
-		serverPrefix = match[0];
-		specialPrefix = true;
-	}
-	else if (permission <= 1 && message.content.toLowerCase().startsWith("suggester:")) {
-		serverPrefix = "suggester:";
-		specialPrefix = true;
-	}
-	else if (permission <= 1 && message.content.toLowerCase().startsWith(`${client.user.id}:`)) {
-		serverPrefix = `${client.user.id}:`;
-		specialPrefix = true;
-	}
-
-	if (!message.content.toLowerCase().startsWith(serverPrefix)) return;
+	let qServerDB;
+	let noCommand = false;
+	let command;
 	let args = message.content.split(" ");
-	serverPrefix.endsWith(" ") ? args = args.splice(2) : args = args.splice(1);
-
-	if (!specialPrefix) {
-		let splitPrefix = serverPrefix.split("");
-		for (let i = 0; i < splitPrefix.length; i++) {
-			if (regexEscape.includes(splitPrefix[i])) splitPrefix[i] = "\\" + splitPrefix[i];
+	if (message.guild) {
+		qServerDB = await dbQuery("Server", {id: message.guild.id});
+		if (qServerDB.blocked) return message.guild.leave();
+		if (qServerDB.config.channels.suggestions === message.channel.id && !message.content.startsWith("\\") && !message.content.startsWith(qServerDB.config.prefix) && !message.content.startsWith(`<@${client.user.id}>`) && !message.content.startsWith(`<@!${client.user.id}>`) && qServerDB.config.in_channel_suggestions) {
+			command = client.commands.find((c) => c.controls.name.toLowerCase() === "suggest");
+			noCommand = true;
 		}
-		serverPrefix = splitPrefix.join("")
 	}
-	let commandName = message.content.toLowerCase().match(new RegExp(`^${serverPrefix}([a-z]+)`));
 
-	if (!commandName || !commandName[1]) return;
-	else commandName = commandName[1];
+	if (!command) {
+		let serverPrefix = qServerDB ? qServerDB.config.prefix : prefix;
+		const match = message.content.match(new RegExp(`^(${escapeRegExp(serverPrefix)}|${permission <= 1 ? "suggester:|" : ""}<@!?${client.user.id}> ?${!message.guild ? "|" : ""})([a-zA-Z0-9]+)`));
+		if (!match) return;
 
-	const command = client.commands.find((c) => c.controls.name.toLowerCase() === commandName || c.controls.aliases && c.controls.aliases.includes(commandName));
+		if (match[1].endsWith(" ")) args = args.splice(1);
+		if (args[0].includes("\n")) {
+			args.splice(0, 1, ...args[0].split("\n"));
+		}
+
+		args.splice(0, 1);
+
+		command = client.commands.find((c) => c.controls.name.toLowerCase() === match[2].toLowerCase() || c.controls.aliases && c.controls.aliases.includes(match[2].toLowerCase()));
+	}
+
 	if (!command) return;
 
-	let contentEmbed = new Discord.MessageEmbed()
-		.setDescription(message.content);
+	let qUserDB = await dbQuery("User", { id: message.author.id });
+	let locale = qUserDB.locale || (qServerDB ? qServerDB.config.locale : "") || "en";
 
-	if (command.controls.enabled === false) {
-		commandLog(`🚫 ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${commandName}\` in the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`) but the command is disabled.`, contentEmbed);
-		return message.channel.send("This command is currently disabled globally.");
+	if (message.channel.type === "dm" && !command.controls.dmAvailable) {
+		commandLog(`🚫 ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${command.controls.name}\` in DMs but the command is only usable in a server.`, message);
+		await commandExecuted(command, message, { pre, post: new Date(), success: false });
+		return message.channel.send(string(locale, "COMMAND_SERVER_ONLY", {}, "error"));
 	}
-	if (permission > command.controls.permission) return commandLog(`🚫 ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${commandName}\` in the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`) but did not have permission to do so.`, contentEmbed);
+	if (command.controls.enabled === false) {
+		commandLog(`🚫 ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${command.controls.name}\` in ${message.guild ? `the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`)` : "DMs" } but the command is disabled.`, message);
+		await commandExecuted(command, message, { pre, post: new Date(), success: false });
+		return message.channel.send(string(locale, "COMMAND_DISABLED", {}, "error"));
+	}
+	if (permission > command.controls.permission) {
+		await commandExecuted(command, message, { pre, post: new Date(), success: false });
+		commandLog(`🚫 ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${command.controls.name}\` in ${message.guild ? `the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`)` : "DMs" } but did not have permission to do so.`, message);
+		return;
+	}
 
-	commandLog(`🔧 ${message.author.tag} (\`${message.author.id}\`) ran command \`${commandName}\` in the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`).`, contentEmbed);
-
-	if (command.controls.permissions) {
-		let channelPermissions = message.channel.permissionsFor(client.user.id);
-		let list = [];
-		const permissionNames = require("../utils/permissions.json");
-		command.controls.permissions.forEach(permission => {
-			if (!channelPermissions.has(permission)) list.push(permissionNames[permission]);
-		});
-		if (list.length >= 1) {
-			if (channelPermissions.has("EMBED_LINKS")) {
-				//Can embed
-				let embed = new Discord.MessageEmbed()
-					.setDescription(`This command cannot be run because some permissions are missing. ${client.user.username} needs the following permissions in the <#${message.channel.id}> channel:`)
-					.addField("Missing Elements", `<:${emoji.x}> ${list.join(`\n<:${emoji.x}> `)}`)
-					.addField("How to Fix", `In the channel settings for <#${message.channel.id}>, make sure that **${client.user.username}** has a <:${emoji.check}> for the above permissions.`)
-					.setColor(colors.red);
-				return message.channel.send(embed).catch(() => {
-					message.author.send(`Your command \`${commandName}\` used in <#${message.channel.id}> failed to execute because <@${client.user.id}> does not have the **Send Messages** permission in that channel. Please make sure <@${client.user.id}> can send messages and try again.`).catch(() => {});
-				});
-			} else {
-				//Cannot embed
-				return message.channel.send(`This command cannot be run because some permissions are missing. ${client.user.username} needs the following permissions in the <#${message.channel.id}> channel:\n - ${list.join("\n- ")}\nIn the channel settings for <#${message.channel.id}>, make sure that **${client.user.username}** has the following permissions allowed.`).catch(() => {
-					message.author.send(`Your command \`${commandName}\` used in <#${message.channel.id}> failed to execute because <@${client.user.id}> does not have the **Send Messages** permission in that channel. Please make sure <@${client.user.id}> can send messages and try again.`).catch(() => {});
-				});
-			}
+	if (command.controls.permissions && message.channel.type !== "dm") {
+		let checkPerms = channelPermissions(locale, command.controls.permissions, message.channel, client);
+		if (checkPerms) {
+			await commandExecuted(command, message, { pre, post: new Date(), success: false });
+			commandLog(`⚠️ ${message.author.tag} (\`${message.author.id}\`) attempted to run command \`${command.controls.name}\` in ${message.guild ? `the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`)` : "DMs" } but bot permissions were invalid`, message);
+			return message.channel.send(checkPerms).catch(() => {});
 		}
 	}
 
-	let qUserDB = await dbQuery("User", { id: message.author.id });
+	commandLog(`🔧 ${message.author.tag} (\`${message.author.id}\`) ran command \`${command.controls.name}\` in ${message.guild ? `the **${message.channel.name}** (\`${message.channel.id}\`) channel of **${message.guild.name}** (\`${message.guild.id}\`)` : "DMs" }`, message);
 	if (command.controls.cooldown && command.controls.cooldown > 0 && permission > 1 && (!qUserDB.flags || (!qUserDB.flags.includes("NO_COOLDOWN") && !qUserDB.flags.includes("PROTECTED"))) && (!qServerDB.flags || !qServerDB.flags.includes("NO_COOLDOWN"))) {
 		/*
 			Cooldown collection:
@@ -117,30 +98,70 @@ module.exports = async (Discord, client, message) => {
 			let cooldownLimit = 15;
 			if (userCount > preLimit) {
 				if (userCount < cooldownLimit) return;
-				//If more than 15 cooldown breaches occur over the duration of the bot being up, auto-blacklist the user and notify the developers
+				//If more than 15 cooldown breaches occur over the duration of the bot being up, auto-block the user and notify the developers
 				qUserDB.blocked = true;
 				await dbModify("User", { id: message.author.id }, qUserDB);
 
+				await commandExecuted(command, message, { pre, post: new Date(), success: false });
+
 				counts.set(message.author.id, 0);
 
-				message.channel.send(`<@${message.author.id}> ⚠️ You have been flagged by the command spam protection filter. This is generally caused when you use a lot of commands too quickly over a period of time. Due to this, you cannot use commands temporarily until a Suggester staff member reviews your situation. If you believe this is an error, please join https://discord.gg/${support_invite} and contact our Support Team.`);
+				message.channel.send(string(locale, "COOLDOWN_SPAM_FLAG", { mention: `<@${message.author.id}>`, support: `https://discord.gg/${support_invite}` })).then(m => {
+					if (noCommand) {
+						setTimeout(function() {
+							message.delete();
+							m.delete();
+						}, 7500);
+					}
+				});
 
 				let hook = new Discord.WebhookClient(log_hooks.commands.id, log_hooks.commands.token);
-				hook.send(`🚨 **EXCESSIVE COOLDOWN BREACHING**\n${message.author.tag} (\`${message.author.id}\`) has breached the cooldown limit of ${cooldownLimit.toString()}\nThey were automatically blacklisted from using the bot globally\n(@everyone)`, {disableMentions: "none"});
-				return;
+				return hook.send(`🚨 **EXCESSIVE COOLDOWN BREACHING**\n${message.author.tag} (\`${message.author.id}\`) has breached the cooldown limit of ${cooldownLimit.toString()}\nThey were automatically blocked from using the bot globally\n(@everyone)`, {disableMentions: "none"});
 			}
 
-			if (expires > now) return message.channel.send(`🕑 This command is on cooldown for ${((expires - now) / 1000).toFixed(0)} more second${((expires - now) / 1000).toFixed(0) !== "1" ? "s" : ""}. ${command.controls.cooldownMessage ? command.controls.cooldownMessage : ""}`);
+			if (expires > now) {
+				await commandExecuted(command, message, { pre, post: new Date(), success: false });
+				return message.channel.send(`${string(locale, "COMMAND_COOLDOWN", { time: ((expires - now) / 1000).toFixed(0) })} ${command.controls.cooldownMessage ? command.controls.cooldownMessage : ""}`).then(m => {
+					if (noCommand) {
+						setTimeout(function() {
+							message.delete();
+							m.delete();
+						}, 7500);
+					}
+				});
+			}
 		}
 
 		times.set(message.author.id, now);
 		setTimeout(() => times.delete(message.author.id), lengthMs);
 	}
 
+	if (message.guild && qServerDB.config.blocklist && qServerDB.config.blocklist.includes(message.author.id)) return commandExecuted(command, message, { pre, post: new Date(), success: false });
+
 	try {
-		return command.do(message, client, args, Discord);
+		command.do(locale, message, client, args, Discord, noCommand)
+			.then(() => {
+				commandExecuted(command, message, { pre, post: new Date(), success: true });
+			})
+			.catch((err) => {
+				let errorText;
+				if (err.stack) errorText = err.stack;
+				else if (err.error) errorText = err.error;
+				message.channel.send(`${string(locale, "ERROR", {}, "error")} ${client.admins.has(message.author.id) && errorText ? `\n\`\`\`${(errorText).length >= 1000 ? (errorText).substring(locale, 0, 1000) + " content too long..." : err.stack}\`\`\`` : ""}`);
+				errorLog(err, "Command Handler", `Message Content: ${message.content}`);
+
+				console.log(err);
+				commandExecuted(command, message, { pre, post: new Date(), success: false });
+			});
+
 	} catch (err) {
-		message.channel.send(`<:${emoji.x}> Something went wrong with that command, please try again later.`);
+		let errorText;
+		if (err.stack) errorText = err.stack;
+		else if (err.error) errorText = err.error;
+		message.channel.send(`${string(locale, "ERROR", {}, "error")} ${client.admins.has(message.author.id) && errorText ? `\n\`\`\`${(errorText).length >= 1000 ? (errorText).substring(locale, 0, 1000) + " content too long..." : err.stack}\`\`\`` : ""}`);
 		errorLog(err, "Command Handler", `Message Content: ${message.content}`);
+
+		console.log(err);
+		commandExecuted(command, message, { pre, post: new Date(), success: false });
 	}
 };
