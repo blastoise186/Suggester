@@ -10,7 +10,7 @@
     "dev": "npx nodemon --exec 'node --trace-warnings index.js' --ignore node_modules/ --ignore i18n/"
   },
   "dependencies": {
-    "@sentry/node": "^5.20.1",
+    "@sentry/node": "^6.2.2",
     "axios": "^0.19.2",
     "blapi": "^2.0.0",
     "chalk": "^4.1.0",
